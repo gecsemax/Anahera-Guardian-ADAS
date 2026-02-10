@@ -90,6 +90,14 @@ typedef enum
     ANH_ALERT_LEVEL_BRAKE_HARD = 3
 } AnaheraAlertLevel_t;
 
+/* Status for safety */
+typedef enum
+{
+    ANH_STATUS_OK = 0,
+    ANH_STATUS_DEGRADED,
+    ANH_STATUS_FAILED
+} AnaheraStatus_t;
+
 /* Output alert structure */
 typedef struct
 {
@@ -98,6 +106,11 @@ typedef struct
     int32_t             object_id;              /* ID of most critical object, or -1 */
     float               ttc_s;                  /* time to collision (s), or -1 if n/a */
     bool                valid;                  /* true if alert active this cycle */
+
+    /* Safety-related fields */
+    AnaheraStatus_t     status;                 /* OK / DEGRADED / FAILED */
+    uint32_t            watchdog_counter;       /* incremented each successful call */
+    bool                redundancy_mismatch;    /* true if redundant paths disagree */
 } AnaheraAlert_t;
 
 /* Config (calibration) */
@@ -110,6 +123,15 @@ typedef struct
     float ttc_warn_s;               /* TTC threshold for warning */
     float ttc_brake_soft_s;         /* TTC threshold for soft brake */
     float ttc_brake_hard_s;         /* TTC threshold for hard brake */
+
+    /* Safety-related plausibility thresholds */
+    float max_lane_width_m;         /* plausibility for lane model width */
+    float max_abs_obj_distance_m;   /* plausibility for object distance */
+    float max_abs_speed_mps;        /* plausibility for ego and relative speeds */
+
+    /* Redundancy configuration */
+    bool  redundancy_enabled;
+    float redundancy_ttc_tolerance_s;
 } AnaheraConfig_t;
 
 /* API */
@@ -119,6 +141,12 @@ void Anahera_Update(const AnaheraObjectList_t* objs,
                     const AnaheraLaneModel_t*  lane,
                     AnaheraAlert_t*            outAlert);
 
+/* Example configuration & task hook */
+void Anahera_ConfigureAndInit(void);
+void Anahera_Task_20ms(const AnaheraObjectList_t* objs,
+                       const AnaheraEgoState_t*   ego,
+                       const AnaheraLaneModel_t*  lane);
+
 /* ================== Internal Implementation ================== */
 
 #ifndef NULL
@@ -127,6 +155,9 @@ void Anahera_Update(const AnaheraObjectList_t* objs,
 
 /* Internal configuration copy */
 static AnaheraConfig_t g_anhCfg;
+
+/* Internal watchdog counter (incremented each successful update) */
+static uint32_t g_anhWatchdogCounter = 0U;
 
 /* Simple history for “sudden appearance” detection */
 typedef struct
@@ -192,6 +223,8 @@ void Anahera_Init(const AnaheraConfig_t* cfg)
         g_anhHistory[i].obj_id = 0;
         g_anhHistory[i].was_seen_last_cycle = false;
     }
+
+    g_anhWatchdogCounter = 0U;
 }
 
 /* Compute TTC (time to collision) in seconds.
@@ -283,6 +316,120 @@ static bool Anahera_IsObjectInEgoLane(const AnaheraObject_t* o,
     return true;
 }
 
+/* Input plausibility checks */
+static bool Anahera_CheckInputsPlausible(const AnaheraObjectList_t* objs,
+                                         const AnaheraEgoState_t*   ego,
+                                         const AnaheraLaneModel_t*  lane)
+{
+    uint8_t i;
+
+    if ((objs == NULL) || (ego == NULL) || (lane == NULL))
+    {
+        return false;
+    }
+
+    /* Ego speed plausibility */
+    if ((ego->speed_mps < -1.0f) || (ego->speed_mps > g_anhCfg.max_abs_speed_mps))
+    {
+        return false;
+    }
+
+    /* Lane plausibility (if valid) */
+    if (lane->valid)
+    {
+        if ((lane->lane_width_m <= 0.0f) ||
+            (lane->lane_width_m > g_anhCfg.max_lane_width_m))
+        {
+            return false;
+        }
+    }
+
+    /* Object plausibility */
+    for (i = 0U; i < objs->count; ++i)
+    {
+        const AnaheraObject_t* o = &objs->objects[i];
+
+        if (!o->valid)
+        {
+            continue;
+        }
+
+        if ( (o->x_m < -1.0f) ||
+             (o->x_m > g_anhCfg.max_abs_obj_distance_m) ||
+             (o->y_m < -g_anhCfg.max_abs_obj_distance_m) ||
+             (o->y_m > g_anhCfg.max_abs_obj_distance_m) )
+        {
+            return false;
+        }
+
+        if ( (o->vx_rel_mps < -g_anhCfg.max_abs_speed_mps) ||
+             (o->vx_rel_mps >  g_anhCfg.max_abs_speed_mps) )
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Secondary, simpler TTC path to provide redundancy */
+static AnaheraAlertLevel_t Anahera_SecondaryPathCompute(const AnaheraObjectList_t* objs,
+                                                        const AnaheraEgoState_t*   ego,
+                                                        const AnaheraLaneModel_t*  lane,
+                                                        float*                     ttc_out,
+                                                        int32_t*                   obj_id_out)
+{
+    uint8_t i;
+    AnaheraAlertLevel_t bestLevel = ANH_ALERT_LEVEL_NONE;
+    float bestTtc = -1.0f;
+    int32_t bestObjId = -1;
+
+    if ((ttc_out == NULL) || (obj_id_out == NULL))
+    {
+        return ANH_ALERT_LEVEL_NONE;
+    }
+
+    for (i = 0U; i < objs->count; ++i)
+    {
+        const AnaheraObject_t* o = &objs->objects[i];
+
+        if (!o->valid || (o->confidence < g_anhCfg.min_confidence))
+        {
+            continue;
+        }
+
+        if (o->type == ANH_OBJ_TYPE_UNKNOWN)
+        {
+            continue;
+        }
+
+        if (!Anahera_IsObjectInEgoLane(o, lane))
+        {
+            continue;
+        }
+
+        if (o->x_m > g_anhCfg.max_detection_distance_m)
+        {
+            continue;
+        }
+
+        /* TTC without sudden check */
+        float ttc = Anahera_ComputeTtc(o->x_m, o->vx_rel_mps);
+        AnaheraAlertLevel_t level = Anahera_EvaluateLevel(ttc, ego->speed_mps);
+
+        if (level > bestLevel)
+        {
+            bestLevel = level;
+            bestTtc = ttc;
+            bestObjId = o->id;
+        }
+    }
+
+    *ttc_out = bestTtc;
+    *obj_id_out = bestObjId;
+    return bestLevel;
+}
+
 /* Main update function */
 void Anahera_Update(const AnaheraObjectList_t* objs,
                     const AnaheraEgoState_t*   ego,
@@ -299,13 +446,25 @@ void Anahera_Update(const AnaheraObjectList_t* objs,
         return;
     }
 
+    /* Initialize output */
     outAlert->level = ANH_ALERT_LEVEL_NONE;
     outAlert->requested_decel_mps2 = 0.0f;
     outAlert->object_id = -1;
     outAlert->ttc_s = -1.0f;
     outAlert->valid = false;
+    outAlert->status = ANH_STATUS_FAILED;
+    outAlert->redundancy_mismatch = false;
+    outAlert->watchdog_counter = g_anhWatchdogCounter;
 
-    /* Process all objects */
+    /* Basic plausibility check */
+    if (!Anahera_CheckInputsPlausible(objs, ego, lane))
+    {
+        /* Stay in FAILED / safe state (no brake request) */
+        return;
+    }
+
+    /* === Primary path: existing TTC + "sudden" logic === */
+
     for (i = 0U; i < objs->count; ++i)
     {
         const AnaheraObject_t* o = &objs->objects[i];
@@ -370,7 +529,43 @@ void Anahera_Update(const AnaheraObjectList_t* objs,
         g_anhHistory[i].was_seen_last_cycle = false;
     }
 
-    /* Fill output */
+    /* Default status is OK (no internal fault detected so far) */
+    outAlert->status = ANH_STATUS_OK;
+
+    /* === Optional redundant path === */
+    if (g_anhCfg.redundancy_enabled)
+    {
+        float sec_ttc = -1.0f;
+        int32_t sec_id = -1;
+        AnaheraAlertLevel_t sec_level =
+            Anahera_SecondaryPathCompute(objs, ego, lane, &sec_ttc, &sec_id);
+
+        /* Compare primary and secondary path results */
+        bool mismatch = false;
+
+        if (sec_level != bestLevel)
+        {
+            mismatch = true;
+        }
+        else if ((sec_level != ANH_ALERT_LEVEL_NONE) &&
+                 (sec_ttc >= 0.0f) && (bestTtc >= 0.0f))
+        {
+            float diff = (sec_ttc > bestTtc) ? (sec_ttc - bestTtc) : (bestTtc - sec_ttc);
+            if (diff > g_anhCfg.redundancy_ttc_tolerance_s)
+            {
+                mismatch = true;
+            }
+        }
+
+        if (mismatch)
+        {
+            outAlert->redundancy_mismatch = true;
+            outAlert->status = ANH_STATUS_DEGRADED;
+            /* Optional: downgrade alert or force safe state here */
+        }
+    }
+
+    /* Fill output from primary path */
     if (bestLevel != ANH_ALERT_LEVEL_NONE)
     {
         outAlert->level = bestLevel;
@@ -394,6 +589,10 @@ void Anahera_Update(const AnaheraObjectList_t* objs,
                 break;
         }
     }
+
+    /* Increment internal watchdog on successful update */
+    g_anhWatchdogCounter++;
+    outAlert->watchdog_counter = g_anhWatchdogCounter;
 }
 
 /* ================== Example Configuration & Task Hook ================== */
@@ -412,6 +611,15 @@ void Anahera_ConfigureAndInit(void)
     cfg.ttc_brake_soft_s         = 2.0f;
     cfg.ttc_brake_hard_s         = 1.0f;
 
+    /* Safety-related plausibility thresholds (example values) */
+    cfg.max_lane_width_m         = 5.0f;
+    cfg.max_abs_obj_distance_m   = 250.0f;
+    cfg.max_abs_speed_mps        = 90.0f;   /* ~324 km/h */
+
+    /* Redundancy settings */
+    cfg.redundancy_enabled         = true;
+    cfg.redundancy_ttc_tolerance_s = 0.3f;
+
     Anahera_Init(&cfg);
 }
 
@@ -423,6 +631,10 @@ void Anahera_Task_20ms(const AnaheraObjectList_t* objs,
     AnaheraAlert_t alert;
     Anahera_Update(objs, ego, lane, &alert);
 
+    /* External safety monitor / watchdog can:
+     *  - Check alert.watchdog_counter increments monotonically
+     *  - Check alert.status and alert.redundancy_mismatch
+     */
     if (alert.valid)
     {
         /* Integrate here:
@@ -465,4 +677,5 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER  
 DEALINGS IN THE SOFTWARE.
 
-===================================================================== *
+===================================================================== */
+
