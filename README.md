@@ -141,16 +141,3 @@ You can adapt the layout to your own project structure (for example splitting he
 For all legal terms, see the License section below.
 
 ---
-
-## License
-
-This project is licensed under the **MIT License**. See the `LICENSE` file in this repository for the full text.[web:91][web:94][web:117]
-
-If you use this code in your own projects (open‑source or commercial), make sure to:
-
-- Keep the MIT copyright and permission notice.  
-- Keep the warranty disclaimer in your distributions.[web:91][web:94][web:111]
-```
-
-
-Sources
