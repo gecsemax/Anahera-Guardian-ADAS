@@ -1,18 +1,28 @@
-/* anahera_alerting_system.c
- *
- * Anahera Alerting System
+/* Anahera Alerting System
  * Author: Max Gecse
  *
  * ADAS module for a central NVIDIA-based ECU on a 2023–2026
- * Mercedes S-Class. It detects "sudden figures" (objects) in the
- * ego lane using an HD-map-based ego lane model and outputs
- * warning / brake requests in the speed range 30–260 km/h.
+ * Mercedes S-Class–style vehicle. It detects "sudden figures"
+ * (objects) in the ego lane using an HD-map-based ego lane model
+ * and outputs warning / brake requests in the speed range 30–260 km/h.
  *
- * WARNING: This code is provided for demonstration and educational purposes.
- * Without explicit written authorization from the author (Max Gecse),
- * it must not be used in series-production systems or safety-critical
- * applications, and no code copying, redistribution, or commercial use
- * is allowed.
+ * SAFETY NOTICE:
+ * This code is experimental concept code for research and education.
+ * It is not safety-certified and must not be used in real vehicles
+ * or other safety-critical systems without full validation, safety
+ * engineering, and certification by qualified experts.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at:
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 #include <stdint.h>
