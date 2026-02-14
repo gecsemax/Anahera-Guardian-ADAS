@@ -1,200 +1,156 @@
-# Anahera Alerting System
+# Anahera Guardian ADAS – Alerting Core
 
-**Author:** Max Gecse  
-**Version:** 0.1 (Prototype / Demo)  
-**License:** MIT
+Anahera Guardian ADAS is a demonstration Advanced Driver Assistance System (ADAS) module written in C.  
+It models an alerting core for a central NVIDIA-based ECU on a 2023–2026 Mercedes S-Class–style vehicle, detecting sudden objects in the ego lane and issuing warning and brake requests in the 30–260 km/h speed range.
+
+> ⚠️ Safety notice  
+> This software is **experimental** and provided for **research and educational purposes only**.  
+> It is **not safety‑certified**, has not undergone any automotive SPICE / ISO 26262 process, and **must not be used in real vehicles without proper validation, safety engineering, and certification by qualified experts**.
 
 ---
 
-## Overview
+## Author
 
-Anahera Alerting System is a forward hazard detection module intended for integration into high‑end driver assistance or automated driving stacks.
-
-It runs on a central vehicle computer (e.g. an ADAS / automated driving domain controller) and:
-
-- Receives a fused **object list** (vehicles, pedestrians, cyclists, static obstacles) in the ego vehicle frame.  
-- Receives an **ego‑lane model** derived from HD maps and sensor fusion (lane centerline and width).  
-- Continuously computes **time‑to‑collision (TTC)** to objects in the ego lane.  
-- Detects **sudden** figures/obstacles appearing in the ego lane in a speed range of approx. **30–260 km/h**.  
-- Outputs graded alerts (warning / soft brake / hard brake) that can be consumed by a higher‑level longitudinal controller or AEB logic.
-
-> ⚠️ This repository contains **prototype / educational** code only. It is **not** suitable for direct use in safety‑critical or series‑production automotive systems.
+- **Max Gecse**
 
 ---
 
 ## Features
 
-- Ego‑lane based detection using an **HD‑map lane model** (centerline polynomial + lane width).  
-- Support for multiple object classes:
-  - Vehicle  
-  - Pedestrian  
-  - Cyclist  
-  - Static obstacle  
-- “Sudden appearance” heuristic using simple object track history.  
-- TTC‑based decision logic with configurable thresholds for:
-  - Warning  
-  - Soft braking request  
-  - Hard braking request  
-- Configurable parameters:
-  - Speed band (e.g. 30–260 km/h)  
-  - Maximum detection distance  
-  - Minimum object confidence  
+- Ego‑lane model based on an HD‑map lane description (polynomial lane centerline and lane widths).  
+- Object list interface with classification (vehicle, pedestrian, cyclist, static obstacle) and confidence scores.  
+- Time‑to‑collision (TTC)–based alert logic with configurable thresholds for:
+  - Warning
+  - Soft brake
+  - Hard brake  
+- Speed range gating (active only between configurable minimum and maximum ego speeds).  
+- Plausibility checks on ego state, lane model, and object list.  
+- Simple sudden‑appearance detection using per‑object history.  
+- Optional redundant “secondary path” for TTC estimation and mismatch detection.  
 
 ---
 
-## Data Flow
+## Architecture overview
 
-### Inputs (per cycle)
+The core logic is implemented in `anahera_alerting_system.c` as a small C library with a clear public API.
 
-- `AnaheraObjectList_t`  
-  - Array of objects with:
-    - Track ID  
-    - Position (x, y) in ego frame  
-    - Relative velocities (vx, vy)  
-    - Length, width  
-    - Object type  
-    - Confidence  
-- `AnaheraEgoState_t`  
-  - Ego speed  
-  - Yaw rate  
-  - Steering angle  
-  - ABS / AEB flags  
-- `AnaheraLaneModel_t`  
-  - Ego‑lane ID  
-  - Lane width  
-  - Lane centerline polynomial in ego frame  
-  - Optional asymmetric lane half‑widths  
-  - Validity flag  
+- **Input types**
+  - `AnaheraObjectList_t`: List of tracked objects in ego coordinates.  
+  - `AnaheraEgoState_t`: Ego vehicle state (speed, yaw rate, steering, ABS/AEB flags).  
+  - `AnaheraLaneModel_t`: HD‑map–based ego‑lane description.  
 
-### Processing
+- **Configuration**
+  - `AnaheraConfig_t`: Calibration data such as speed band, detection range, TTC thresholds, and plausibility limits.  
 
-1. Filter objects by validity, confidence, and type.  
-2. Use the lane model to decide if each object is in the **ego lane**.  
-3. Enforce a forward distance limit.  
-4. Use simple per‑ID history to detect **sudden** objects (seen now, not seen last filtered cycle).  
-5. Compute TTC for relevant objects.  
-6. Determine alert level based on TTC and ego speed.  
-7. Select the most critical object and generate one `AnaheraAlert_t`.
+- **Output**
+  - `AnaheraAlert_t`: Current alert level, requested deceleration, most critical object ID, TTC, and safety flags (status, watchdog counter, redundancy mismatch).  
 
-### Output
-
-- `AnaheraAlert_t`
-  - Alert level:
-    - `ANH_ALERT_LEVEL_NONE`  
-    - `ANH_ALERT_LEVEL_WARNING`  
-    - `ANH_ALERT_LEVEL_BRAKE_SOFT`  
-    - `ANH_ALERT_LEVEL_BRAKE_HARD`  
-  - Requested deceleration (m/s²)  
-  - Track ID of most critical object  
-  - TTC (s)  
-  - Valid flag  
-
----
-
-## API Overview
-
-### Initialization
+Core public functions:
 
 ```c
 void Anahera_Init(const AnaheraConfig_t* cfg);
-
-/* Example helper provided in the source */
-void Anahera_ConfigureAndInit(void);
-
-
- AnaheraConfig_t  allows you to configure:
-	•	 min_speed_mps  /  max_speed_mps 
-	•	 max_detection_distance_m 
-	•	 min_confidence 
-	•	 ttc_warn_s 
-	•	 ttc_brake_soft_s 
-	•	 ttc_brake_hard_s 
-Periodic Update
-
-
 void Anahera_Update(const AnaheraObjectList_t* objs,
                     const AnaheraEgoState_t*   ego,
                     const AnaheraLaneModel_t*  lane,
                     AnaheraAlert_t*            outAlert);
 
-/* Example task wrapper (e.g. 20 ms cycle) */
+void Anahera_ConfigureAndInit(void);
 void Anahera_Task_20ms(const AnaheraObjectList_t* objs,
                        const AnaheraEgoState_t*   ego,
                        const AnaheraLaneModel_t*  lane);
-You are expected to adapt  Anahera_Task_20ms  to your actual scheduling and middleware (e.g. AUTOSAR RTE, RTOS task, or in‑process callback).
-Usage Example
-	1.	At startup, configure and initialize:
+```
 
-int main(void)
-{
-    /* System/platform init here... */
+`Anahera_Task_20ms` is intended to be called periodically (for example every 20 ms) from your main loop or RTOS task.
 
-    Anahera_ConfigureAndInit();
+---
 
-    /* Scheduler / main loop setup... */
-}
+## Getting started
 
-2.	Periodically (e.g. every 20 ms), call the task with current inputs:
+### Prerequisites
+
+- C toolchain (for example `gcc` or `clang`) on Linux, macOS, or other POSIX‑style environment.  
+- Basic familiarity with C, structs, and build systems (Makefile or similar).
+
+If your repository includes a `Makefile`, you can usually build a demo binary with:
+
+```bash
+make
+```
+
+This can be adapted to your own build system (CMake, Bazel, IDE projects, etc.).
+
+---
+
+## Basic usage
+
+1. **Configure and initialize**
+
+   Either call the helper:
+
+   ```c
+   Anahera_ConfigureAndInit();
+   ```
+
+   or create your own `AnaheraConfig_t` and call:
+
+   ```c
+   AnaheraConfig_t cfg = { /* fill your calibration */ };
+   Anahera_Init(&cfg);
+   ```
+
+2. **Prepare inputs each cycle**
+
+   - Fill `AnaheraObjectList_t` with current perception objects.  
+   - Fill `AnaheraEgoState_t` with current ego state.  
+   - Fill `AnaheraLaneModel_t` with the ego‑lane description from your HD map / localization.
+
+3. **Call the update function**
+
+   ```c
+   AnaheraAlert_t alert;
+   Anahera_Update(&objs, &ego, &lane, &alert);
+   ```
+
+4. **Consume the output**
+
+   - Check `alert.valid` to see if any alert is active.  
+   - Use `alert.level` and `alert.requested_decel_mps2` to drive your higher‑level ADAS / braking logic.  
+   - Monitor `alert.status`, `alert.watchdog_counter`, and `alert.redundancy_mismatch` in your safety supervisor.
+
+---
+
+## Project structure
+
+Typical files you might see in this repository:
+
+- `anahera_alerting_system.c` – Main alerting core implementation.  
+- `anahera_alerting_system.h` (if present) – Public API and type declarations.  
+- `Makefile` – Example build configuration for a demo or test harness.  
+- `README.md` – This file.  
+- `LICENSE` – MIT License for the project.  
+
+You can adapt the layout to your own project structure (for example splitting headers, sources, test harness, and documentation into separate directories).
+---
+
+## Safety and legal disclaimer
+
+- This project is a **demo** and **research** module only.  
+- It has **no warranty** of correctness, safety, or fitness for any particular purpose.[web:91][web:94]  
+- Do not integrate it into real vehicles or safety‑critical systems without a full engineering and safety lifecycle (requirements, design, verification, validation, safety analysis, certification, etc.).  
+
+For all legal terms, see the License section below.
+
+---
+
+## License
+
+This project is licensed under the **MIT License**. See the `LICENSE` file in this repository for the full text.[web:91][web:94][web:117]
+
+If you use this code in your own projects (open‑source or commercial), make sure to:
+
+- Keep the MIT copyright and permission notice.  
+- Keep the warranty disclaimer in your distributions.[web:91][web:94][web:111]
+```
 
 
-void Periodic_20ms(void)
-{
-    AnaheraObjectList_t objs;
-    AnaheraEgoState_t   ego;
-    AnaheraLaneModel_t  lane;
-
-    /* Fill objs, ego, lane from your perception and lane-fusion stack */
-
-    Anahera_Task_20ms(&objs, &ego, &lane);
-}
-	3.	Inside  Anahera_Task_20ms , handle  AnaheraAlert_t  and forward to your:
-	•	Braking / longitudinal controller
-	•	HMI / warning system
-	•	Logging infrastructure
-Intended Use
-	•	Research and prototyping of:
-	•	In‑lane obstacle detection.
-	•	TTC‑based hazard evaluation.
-	•	Safety supervision around perception outputs.
-	•	Educational and concept demonstration code for:
-	•	Architecture discussions.
-	•	Safety concept drafting.
-	•	Code structure examples.
-		❌ Not intended as a production‑ready safety function or as a certified implementation for any standard (e.g. ISO 26262).
-Safety Disclaimer
-	•	The software has not been safety‑validated, verified, or certified for any automotive standard.
-	•	It must never be relied upon as the sole or primary safety mechanism in any real vehicle.
-	•	Any real‑world automotive use requires a complete safety engineering lifecycle:
-	•	Hazard and risk analysis
-	•	Functional and technical safety concepts
-	•	Detailed design, verification, and validation
-	•	Independent assessment and certification (where applicable)
-License
-This project is licensed under the MIT License.
-
-MIT License
-
-Copyright (c) 2026 Max Gecse
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-
-
-
-
+Sources
