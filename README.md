@@ -225,6 +225,18 @@ You can adapt the layout to your own project structure (for example splitting he
 
 ***
 
+
+## Project status
+
+This repository is **feature-complete** in its current form and is no longer under active development.
+
+I do **not plan to publish further public releases** of Anahera Guardian ADAS on GitHub.  
+Bug fixes or small clean-ups may still be applied from time to time, but new major features, architectures, or production-grade implementations will **not** be added here.
+
+If you are interested in using this code for research, education, or experiments, you are welcome to do so under the terms of the LICENSE file.
+```
+
+
 ## Safety and legal disclaimer
 
 - This project is a **demo** and **research** module only.  
