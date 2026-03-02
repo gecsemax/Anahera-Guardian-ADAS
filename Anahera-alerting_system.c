@@ -1,4 +1,3 @@
-
 /* Anahera Alerting System – Integrated ADAS Demo Stack
  * Author: Max Gecse
  *
