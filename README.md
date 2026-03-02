@@ -39,6 +39,34 @@ Integrated demo stack:
 
 ***
 
+## Limitations / What this demo does **not** include
+
+This repository intentionally implements only a **very narrow** slice of a real ADAS stack. The current version has the following important limitations:
+
+- **Longitudinal control only**  
+  - The demo stack only models longitudinal intervention (requested deceleration / braking).  
+  - It does **not** output any steering or lateral control commands.
+
+- **No real environment perception**  
+  - There is **no real sensor integration or perception** (no camera / radar / lidar drivers, no real‑world object detection or tracking).  
+  - The “sensor fusion” is a **simulation stub** that generates a synthetic ego lane and a single lead object; it is not suitable as a basis for a production perception stack.
+
+- **No lateral control / lane keeping**  
+  - There is **no lateral control**, lane keeping assist (LKA), lane centering, lane change planning, or trajectory following.  
+  - The ego lane is used only as a geometric reference for object filtering in the alerting logic.
+
+- **No driver monitoring and no HMI**  
+  - There is **no driver monitoring** (no eye‑tracking, hands‑on detection, drowsiness or distraction assessment).  
+  - There is **no HMI layer**: no cluster / HUD / infotainment integration, no warning icons, chimes, or take‑over requests.
+
+- **No real vehicle dynamics model**  
+  - The demo uses a very simplified kinematic model (straight road, constant ego speed in the basic stub) purely to exercise the alerting logic.  
+  - It does **not** model full vehicle dynamics (suspension, tire behavior, ESP/ABS, steering system, brake heating, road friction, etc.).
+
+Because of these limitations, this code must be treated strictly as a **conceptual and educational example**, not as a drop‑in component for any production ADAS or automated driving system.
+
+***
+
 ## Architecture overview
 
 The core logic is implemented as a small C library with a clear public API, with an optional demo stack layered around it.
@@ -204,5 +232,4 @@ You can adapt the layout to your own project structure (for example splitting he
 - Do not integrate it into real vehicles or safety‑critical systems without a full engineering and safety lifecycle (requirements, design, verification, validation, safety analysis, certification, etc.).  
 
 For all legal terms, see the `LICENSE` file in this repository.
-
 
